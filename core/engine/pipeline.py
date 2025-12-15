@@ -536,7 +536,7 @@ class Pipeline:
                     # Optionally revert and restart - for now just log
                     pass
                 else:
-                    logger.debug(f"Job already exists for file: {event.path}")
+                    logger.info(f"Job already exists for file (job_id={job.id}, status={job.status}): {event.path}")
                     return None
         
         # Build job data
