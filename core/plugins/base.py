@@ -149,6 +149,11 @@ class Processor(ABC):
         """
         self._config = {**self.default_config, **(config or {})}
     
+    @property
+    def config(self) -> dict[str, Any]:
+        """Get the runtime configuration."""
+        return self._config
+    
     # -------------------------------------------------------------------------
     # Abstract methods (must be implemented by subclasses)
     # -------------------------------------------------------------------------
