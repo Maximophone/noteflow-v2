@@ -62,11 +62,14 @@ class StepResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     """Unique identifier for this step execution."""
     
-    job_id: str
+    job_id: str = ""
     """The job this step was executed for."""
     
     step_name: str
     """The processor/step that was executed."""
+    
+    message: Optional[str] = None
+    """Human-readable message about what happened."""
     
     # Status
     status: StepStatus = StepStatus.PENDING

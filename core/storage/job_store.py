@@ -152,7 +152,11 @@ class JobStore:
         rows = await self.db.fetch_all(
             "SELECT status, COUNT(*) as count FROM jobs GROUP BY status"
         )
-        return {row["status"]: row["count"] for row in rows}
+        # Ensure no None keys (use "unknown" as fallback)
+        return {
+            (row["status"] or "unknown"): row["count"] 
+            for row in rows
+        }
     
     async def update_status(
         self,
