@@ -1,0 +1,24 @@
+name: example
+display_name: Example Processor
+description: An example processor that demonstrates the plugin system
+version: 1.0.0
+
+# Dependencies - list of processor names that must complete first
+requires: []
+
+# Configuration schema
+config:
+  greeting:
+    type: string
+    default: "Hello"
+    description: "Greeting to use when processing"
+  uppercase:
+    type: boolean
+    default: false
+    description: "Whether to uppercase the output"
+
+# UI configuration
+ui:
+  has_panel: false
+  requires_input: never  # never, always, conditional
+
