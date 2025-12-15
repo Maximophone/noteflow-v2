@@ -1,0 +1,23 @@
+name: word_counter
+display_name: Word Counter
+description: >
+  Analyzes text files and counts words, lines, and characters.
+  Adds statistics to the job data.
+version: 1.0.0
+
+# This runs after text_echo (to demonstrate chaining)
+requires:
+  - text_echo
+
+# Configuration
+config:
+  count_unique_words:
+    type: boolean
+    description: Also count unique words
+    default: true
+
+# UI settings
+ui:
+  has_panel: false
+  requires_input: never
+

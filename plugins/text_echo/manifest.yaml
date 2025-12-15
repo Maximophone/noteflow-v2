@@ -1,0 +1,30 @@
+name: text_echo
+display_name: Text Echo
+description: >
+  Simple processor that reads text files and creates a processed copy 
+  with metadata. Great for testing the pipeline.
+version: 1.0.0
+
+# No dependencies - this is a starting processor
+requires: []
+
+# Configuration
+config:
+  output_dir:
+    type: string
+    description: Directory to write processed files
+    default: "data/processed"
+  add_timestamp:
+    type: boolean
+    description: Add processing timestamp to output
+    default: true
+  prefix:
+    type: string
+    description: Prefix to add to output filename
+    default: "processed_"
+
+# UI settings
+ui:
+  has_panel: false
+  requires_input: never
+

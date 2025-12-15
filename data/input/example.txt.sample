@@ -1,0 +1,25 @@
+This is an example text file for testing NoteFlow v2.
+
+When you copy this file to example.txt (removing the .sample extension),
+the file watcher will detect it and create a job.
+
+The pipeline will:
+1. Run the text_echo processor to add a metadata header
+2. Run the word_counter processor to generate statistics
+
+You can watch the process in:
+- The terminal where the server is running
+- The UI at http://localhost:5173
+- The API at http://localhost:8000/api/jobs
+
+After processing, check:
+- data/processed/ for the processed file
+- data/stats/ for the statistics JSON
+
+To test revert, use:
+  curl -X POST http://127.0.0.1:8000/api/jobs/{job_id}/revert
+
+This will delete the created files and reset the job.
+
+Happy testing!
+

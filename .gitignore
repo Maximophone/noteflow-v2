@@ -25,7 +25,15 @@ ENV/
 env/
 
 # Data files
-data/
+data/**
+!data/
+!data/input/
+!data/input/.gitkeep
+!data/input/*.sample
+!data/processed/
+!data/processed/.gitkeep
+!data/stats/
+!data/stats/.gitkeep
 *.db
 *.sqlite
 *.sqlite3

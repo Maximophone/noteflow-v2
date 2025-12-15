@@ -1,0 +1,30 @@
+# NoteFlow v2 - Test Watch Configuration
+#
+# This configuration watches the data/input directory for text files.
+# When you drop a .txt or .md file there, it will be processed through:
+#   1. text_echo - Creates a processed copy with metadata header
+#   2. word_counter - Analyzes the file and creates statistics
+
+watches:
+  # Watch the test input directory for text files
+  - name: Test Input
+    path: data/input
+    patterns:
+      - "*.txt"
+      - "*.md"
+      - "*.text"
+    source_type: text
+    initial_processor: text_echo
+    events:
+      - created
+      - modified
+    tags:
+      - test
+      - text
+    debounce_seconds: 0.5
+    priority: 10
+    ignore_patterns:
+      - "*.tmp"
+      - ".DS_Store"
+      - ".*"
+
