@@ -2,13 +2,15 @@
 
 import asyncio
 from pathlib import Path
-from typing import Optional, Callable, Awaitable, Any
+from typing import Optional, Callable, Awaitable, Any, List
 from datetime import datetime
 import logging
 
 from ..models import Job, JobStatus, StepResult
 from ..storage import Database, JobStore, ArtifactStore
 from ..plugins import ProcessorRegistry, PluginLoader
+from ..watchers import FileWatcher, WatchConfig, WatchEvent
+from ..watchers.watch_config import FileEvent
 from .context import ExecutionContext
 from .router import Router
 from .executor import JobExecutor
@@ -55,6 +57,10 @@ class Pipeline:
         self.router: Optional[Router] = None
         self.executor: Optional[JobExecutor] = None
         
+        # File watching
+        self.file_watcher = FileWatcher()
+        self.file_watcher.on_file_event = self._handle_file_event
+        
         # State
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
@@ -69,6 +75,7 @@ class Pipeline:
             "job_failed": [],
             "step_completed": [],
             "step_awaiting_input": [],
+            "file_detected": [],
         }
     
     # -------------------------------------------------------------------------
@@ -120,6 +127,9 @@ class Pipeline:
         logger.info("Stopping pipeline...")
         
         self._running = False
+        
+        # Stop file watcher
+        await self.file_watcher.stop()
         
         # Cancel worker if running
         if self._worker_task and not self._worker_task.done():
@@ -444,6 +454,125 @@ class Pipeline:
         await self._emit("step_awaiting_input", job, step_name)
     
     # -------------------------------------------------------------------------
+    # File Watching
+    # -------------------------------------------------------------------------
+    
+    def add_watch(self, config: WatchConfig) -> None:
+        """
+        Add a directory watch configuration.
+        
+        Args:
+            config: Watch configuration specifying directory, patterns, etc.
+        """
+        self.file_watcher.add_watch(config)
+    
+    def remove_watch(self, name: str) -> bool:
+        """Remove a watch by name."""
+        return self.file_watcher.remove_watch(name)
+    
+    def get_watch(self, name: str) -> Optional[WatchConfig]:
+        """Get a watch configuration by name."""
+        return self.file_watcher.get_watch(name)
+    
+    def list_watches(self) -> List[WatchConfig]:
+        """List all watch configurations."""
+        return list(self.file_watcher.watches.values())
+    
+    async def start_watching(self) -> None:
+        """Start watching all configured directories."""
+        await self.file_watcher.start()
+        logger.info(f"Started file watching with {len(self.file_watcher.watches)} watches")
+    
+    async def stop_watching(self) -> None:
+        """Stop watching directories."""
+        await self.file_watcher.stop()
+        logger.info("Stopped file watching")
+    
+    async def scan_existing_files(self, watch_name: Optional[str] = None) -> List[Job]:
+        """
+        Scan existing files and create jobs for them.
+        
+        This is useful for processing files that existed before the watcher started.
+        
+        Args:
+            watch_name: Optional specific watch to scan. If None, scans all watches.
+            
+        Returns:
+            List of created jobs.
+        """
+        events = await self.file_watcher.scan_existing(watch_name)
+        jobs = []
+        
+        for event in events:
+            job = await self._create_job_from_file_event(event)
+            if job:
+                jobs.append(job)
+        
+        logger.info(f"Scanned existing files: created {len(jobs)} jobs")
+        return jobs
+    
+    async def _handle_file_event(self, event: FileEvent) -> None:
+        """Handle a file event from the watcher."""
+        logger.debug(f"File event received: {event.event_type.value} {event.path}")
+        
+        # Emit event for UI
+        await self._emit("file_detected", event)
+        
+        # Only create jobs for create/modify events
+        if event.event_type in (WatchEvent.CREATED, WatchEvent.MODIFIED):
+            await self._create_job_from_file_event(event)
+    
+    async def _create_job_from_file_event(self, event: FileEvent) -> Optional[Job]:
+        """Create a job from a file event."""
+        config = event.watch_config
+        
+        # Check if job already exists for this file
+        existing_jobs = await self.job_store.list_all(limit=1000)
+        for job in existing_jobs:
+            if job.source_path == str(event.path):
+                # For modified events, we might want to re-process
+                if event.event_type == WatchEvent.MODIFIED and job.status == JobStatus.COMPLETED:
+                    logger.info(f"File modified, resetting completed job: {event.path}")
+                    # Optionally revert and restart - for now just log
+                    pass
+                else:
+                    logger.debug(f"Job already exists for file: {event.path}")
+                    return None
+        
+        # Build job data
+        data = {
+            "original_filename": event.filename,
+            "watch_name": config.name,
+            **config.metadata,
+        }
+        
+        # Add frontmatter for markdown files
+        if event.path.suffix == ".md":
+            try:
+                content = event.path.read_text(encoding="utf-8")
+                data["initial_content"] = content
+            except Exception as e:
+                logger.warning(f"Failed to read markdown file {event.path}: {e}")
+        
+        # Create the job
+        job = await self.create_job(
+            source_type=config.source_type,
+            source_name=event.filename,
+            source_path=str(event.path),
+            data=data,
+            tags=config.tags.copy(),
+            priority=config.priority,
+        )
+        
+        # If initial processor specified, set it
+        if config.initial_processor:
+            job.current_step = config.initial_processor
+            await self.job_store.save(job)
+        
+        logger.info(f"Created job from file event: {job.id} ({event.filename})")
+        return job
+    
+    # -------------------------------------------------------------------------
     # Statistics
     # -------------------------------------------------------------------------
     
@@ -457,5 +586,7 @@ class Pipeline:
             "max_concurrent": self.max_concurrent_jobs,
             "processors_loaded": len(self.registry),
             "jobs_by_status": counts,
+            "watches": len(self.file_watcher.watches),
+            "watching": self.file_watcher.is_running,
         }
 

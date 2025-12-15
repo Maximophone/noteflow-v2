@@ -14,6 +14,7 @@ import json
 
 from ..engine.pipeline import Pipeline
 from ..models import JobStatus
+from ..watchers import WatchConfig, load_watches_from_yaml, save_watches_to_yaml, write_example_config
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,8 @@ class StatsResponse(BaseModel):
     max_concurrent: int
     processors_loaded: int
     jobs_by_status: dict[str, int]
+    watches: int
+    watching: bool
 
 
 class ProcessorInfo(BaseModel):
@@ -85,6 +88,37 @@ class ProcessorInfo(BaseModel):
     requires: list[str]
     has_ui: bool
     requires_input: str
+
+
+class WatchResponse(BaseModel):
+    """Watch configuration response."""
+    name: str
+    path: str
+    patterns: list[str]
+    recursive: bool
+    events: list[str]
+    source_type: str
+    initial_processor: Optional[str]
+    debounce_seconds: float
+    enabled: bool
+    tags: list[str]
+    priority: int
+
+
+class AddWatchRequest(BaseModel):
+    """Request to add a new watch."""
+    name: str
+    path: str
+    patterns: list[str] = ["*"]
+    recursive: bool = False
+    events: list[str] = ["created", "modified"]
+    source_type: str = "file"
+    initial_processor: Optional[str] = None
+    debounce_seconds: float = 1.0
+    enabled: bool = True
+    tags: list[str] = []
+    priority: int = 0
+    metadata: dict = {}
 
 
 # -------------------------------------------------------------------------
@@ -152,6 +186,18 @@ async def lifespan(app: FastAPI):
     pipeline.on("job_failed", on_job_failed)
     pipeline.on("step_completed", on_step_completed)
     pipeline.on("step_awaiting_input", on_step_awaiting_input)
+    pipeline.on("file_detected", on_file_detected)
+    
+    # Load watches from config file if it exists
+    watches_config_path = Path(os.environ.get("NOTEFLOW_WATCHES_CONFIG", "config/watches.yaml"))
+    if watches_config_path.exists():
+        watches = load_watches_from_yaml(watches_config_path)
+        for watch in watches:
+            pipeline.add_watch(watch)
+        logger.info(f"Loaded {len(watches)} watch configurations")
+        
+        # Start file watching
+        await pipeline.start_watching()
     
     # Start background worker
     await pipeline.start_background_worker()
@@ -195,6 +241,14 @@ async def on_step_awaiting_input(job, step_name):
         "event": "step_awaiting_input",
         "job_id": job.id,
         "step_name": step_name,
+    })
+
+async def on_file_detected(event):
+    await manager.broadcast({
+        "event": "file_detected",
+        "path": str(event.path),
+        "watch_name": event.watch_config.name,
+        "event_type": event.event_type.value,
     })
 
 
@@ -348,6 +402,99 @@ def create_app() -> FastAPI:
         return [a.model_dump() for a in artifacts]
     
     # -------------------------------------------------------------------------
+    # Watch Endpoints
+    # -------------------------------------------------------------------------
+    
+    @app.get("/api/watches", response_model=list[WatchResponse])
+    async def list_watches():
+        """List all configured file watches."""
+        return [_watch_to_response(w) for w in pipeline.list_watches()]
+    
+    @app.post("/api/watches", response_model=WatchResponse, status_code=201)
+    async def add_watch(request: AddWatchRequest):
+        """Add a new file watch."""
+        from ..watchers import WatchConfig, WatchEvent
+        
+        config = WatchConfig(
+            path=Path(request.path),
+            name=request.name,
+            patterns=request.patterns,
+            recursive=request.recursive,
+            events={WatchEvent(e) for e in request.events},
+            source_type=request.source_type,
+            initial_processor=request.initial_processor,
+            debounce_seconds=request.debounce_seconds,
+            enabled=request.enabled,
+            tags=request.tags,
+            priority=request.priority,
+            metadata=request.metadata,
+        )
+        
+        pipeline.add_watch(config)
+        
+        # Restart watcher if it was running
+        if pipeline.file_watcher.is_running:
+            await pipeline.stop_watching()
+            await pipeline.start_watching()
+        
+        return _watch_to_response(config)
+    
+    @app.get("/api/watches/{name}", response_model=WatchResponse)
+    async def get_watch(name: str):
+        """Get a watch configuration by name."""
+        watch = pipeline.get_watch(name)
+        if not watch:
+            raise HTTPException(status_code=404, detail="Watch not found")
+        return _watch_to_response(watch)
+    
+    @app.delete("/api/watches/{name}")
+    async def remove_watch(name: str):
+        """Remove a watch by name."""
+        success = pipeline.remove_watch(name)
+        if not success:
+            raise HTTPException(status_code=404, detail="Watch not found")
+        return {"deleted": True}
+    
+    @app.post("/api/watches/start")
+    async def start_watching():
+        """Start file watching."""
+        await pipeline.start_watching()
+        return {"status": "watching", "watches": len(pipeline.list_watches())}
+    
+    @app.post("/api/watches/stop")
+    async def stop_watching():
+        """Stop file watching."""
+        await pipeline.stop_watching()
+        return {"status": "stopped"}
+    
+    @app.post("/api/watches/scan")
+    async def scan_existing(watch_name: Optional[str] = Query(None)):
+        """Scan existing files and create jobs."""
+        jobs = await pipeline.scan_existing_files(watch_name)
+        return {
+            "scanned": True,
+            "jobs_created": len(jobs),
+            "job_ids": [j.id for j in jobs],
+        }
+    
+    @app.get("/api/watches/status")
+    async def watch_status():
+        """Get file watching status."""
+        return {
+            "watching": pipeline.file_watcher.is_running,
+            "watches_configured": len(pipeline.list_watches()),
+            "watches": [
+                {
+                    "name": w.name,
+                    "enabled": w.enabled,
+                    "path": str(w.path),
+                    "path_exists": w.path.exists(),
+                }
+                for w in pipeline.list_watches()
+            ],
+        }
+    
+    # -------------------------------------------------------------------------
     # WebSocket
     # -------------------------------------------------------------------------
     
@@ -385,6 +532,23 @@ def _job_to_response(job) -> dict:
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+def _watch_to_response(watch: WatchConfig) -> dict:
+    """Convert a WatchConfig to a response dict."""
+    return {
+        "name": watch.name,
+        "path": str(watch.path),
+        "patterns": watch.patterns,
+        "recursive": watch.recursive,
+        "events": [e.value for e in watch.events],
+        "source_type": watch.source_type,
+        "initial_processor": watch.initial_processor,
+        "debounce_seconds": watch.debounce_seconds,
+        "enabled": watch.enabled,
+        "tags": watch.tags,
+        "priority": watch.priority,
     }
 
 

@@ -9,10 +9,11 @@
 5. [Architecture Overview](#architecture-overview)
 6. [Key Abstractions](#key-abstractions)
 7. [Data Flow](#data-flow)
-8. [Plugin System](#plugin-system)
-9. [Reversibility Model](#reversibility-model)
-10. [UI Architecture](#ui-architecture)
-11. [Migration Path from v1](#migration-path-from-v1)
+8. [File Watching System](#file-watching-system)
+9. [Plugin System](#plugin-system)
+10. [Reversibility Model](#reversibility-model)
+11. [UI Architecture](#ui-architecture)
+12. [Migration Path from v1](#migration-path-from-v1)
 
 ---
 
@@ -438,6 +439,123 @@ class ExecutionContext:
 
 4. Update job status to PENDING, current_step to X
    └─> Job can now be re-processed
+```
+
+---
+
+## File Watching System
+
+The file watcher automatically monitors directories for new files and creates jobs when matching files are detected.
+
+### Watch Configuration
+
+Watches are configured via `config/watches.yaml`:
+
+```yaml
+watches:
+  - name: Audio Input
+    path: ~/NoteFlow/Audio/Incoming
+    patterns:
+      - "*.mp3"
+      - "*.m4a"
+      - "*.wav"
+    source_type: audio
+    initial_processor: transcribe
+    tags:
+      - transcription
+    priority: 10
+    
+  - name: Transcriptions
+    path: ~/Obsidian/KnowledgeBot/Transcriptions
+    patterns:
+      - "*.md"
+    source_type: markdown
+    events:
+      - created
+      - modified
+    tags:
+      - transcript
+```
+
+### WatchConfig Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `name` | string | required | Unique identifier for this watch |
+| `path` | string | required | Directory path to watch |
+| `patterns` | list | `["*"]` | File patterns to match (e.g., `["*.md", "*.mp3"]`) |
+| `recursive` | bool | `false` | Watch subdirectories |
+| `events` | list | `["created", "modified"]` | Events to trigger jobs |
+| `source_type` | string | `"file"` | Type for created jobs |
+| `initial_processor` | string | `null` | First processor to run |
+| `debounce_seconds` | float | `1.0` | Delay before processing (handles rapid saves) |
+| `ignore_patterns` | list | common ignores | Patterns to skip |
+| `enabled` | bool | `true` | Whether this watch is active |
+| `tags` | list | `[]` | Tags for created jobs |
+| `priority` | int | `0` | Priority for created jobs |
+
+### Watch Events
+
+| Event | Description |
+|-------|-------------|
+| `created` | New file detected |
+| `modified` | Existing file changed |
+| `deleted` | File removed |
+| `moved` | File renamed/moved |
+
+### Convenience Factory Functions
+
+```python
+from core.watchers import audio_watch, video_watch, markdown_watch, obsidian_watch
+
+# Preset configurations
+pipeline.add_watch(audio_watch(Path("~/Audio/Incoming")))
+pipeline.add_watch(markdown_watch(Path("~/Notes"), initial_processor="classify"))
+pipeline.add_watch(obsidian_watch(Path("~/Obsidian/Vault")))
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/watches` | GET | List all watches |
+| `/api/watches` | POST | Add a new watch |
+| `/api/watches/{name}` | GET | Get watch by name |
+| `/api/watches/{name}` | DELETE | Remove a watch |
+| `/api/watches/start` | POST | Start file watching |
+| `/api/watches/stop` | POST | Stop file watching |
+| `/api/watches/scan` | POST | Scan existing files |
+| `/api/watches/status` | GET | Get watcher status |
+
+### How It Works
+
+1. **Startup**: Watches are loaded from `config/watches.yaml`
+2. **Detection**: `watchfiles` library monitors directories for changes
+3. **Debouncing**: Rapid changes are coalesced (e.g., multiple saves)
+4. **Job Creation**: Matching files create new jobs with configured properties
+5. **Processing**: Background worker picks up jobs and processes them
+
+```
+File Created/Modified
+        │
+        ▼
+   FileWatcher
+        │
+   ┌────┴────┐
+   │ Match?  │──No──> Ignore
+   └────┬────┘
+        │Yes
+        ▼
+   Debounce (1s)
+        │
+        ▼
+  Create Job
+        │
+        ▼
+  Background Worker
+        │
+        ▼
+   Process Job
 ```
 
 ---
